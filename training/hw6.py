@@ -7,39 +7,33 @@ from tensorflow.keras import layers, models
 
 # --- AYARLAR ---
 BATCH_SIZE = 64
-EPOCHS = 5  # Ödev için bu sayıyı artırabilirsin
+EPOCHS = 5  # Sonuçları iyileştirmek için 10 yapabilirsin
 NUM_CLASSES = 10
-IMG_SIZE = 32  # Transfer learning modelleri için min 32x32 gerekli
+IMG_SIZE = 32  # En küçük desteklenen boyut
 
-# Çıktı klasörü oluştur
-OUTPUT_DIR = "stm32_models_quantized" # Klasör adını değiştirdim karışmasın diye
+# Çıktı klasörü
+OUTPUT_DIR = "stm32_final_models"
 if not os.path.exists(OUTPUT_DIR):
     os.makedirs(OUTPUT_DIR)
 
 print(f"TensorFlow Version: {tf.__version__}")
+print("Mode: ULTRA-COMPACT (Alpha=0.35 + Int8 Quantization)")
 
-# --- 1. VERİ HAZIRLAMA (Listing 13.16 Referanslı) ---
+# --- 1. VERİ HAZIRLAMA ---
 def prepare_data():
-    print("Veri seti yükleniyor ve işleniyor...")
+    print("Veri seti hazırlanıyor...")
     (x_train, y_train), (x_val, y_val) = keras.datasets.mnist.load_data()
 
-    # One-hot encoding
     y_train = keras.utils.to_categorical(y_train, NUM_CLASSES)
     y_val = keras.utils.to_categorical(y_val, NUM_CLASSES)
 
-    # Veri işleme fonksiyonu (Resizing + Grayscale to RGB)
     def preprocess_image(image, label):
-        # Boyut ekle: (28, 28) -> (28, 28, 1)
         image = tf.expand_dims(image, axis=-1)
-        # Boyutlandır: (32, 32, 1)
         image = tf.image.resize(image, (IMG_SIZE, IMG_SIZE))
-        # RGB'ye çevir: (32, 32, 3) - Transfer learning için şart
-        image = tf.image.grayscale_to_rgb(image)
-        # Normalize et: [0, 1]
+        image = tf.image.grayscale_to_rgb(image) # Transfer learning için şart
         image = image / 255.0
         return image, label
 
-    # tf.data pipeline oluşturma
     train_ds = tf.data.Dataset.from_tensor_slices((x_train, y_train))
     val_ds = tf.data.Dataset.from_tensor_slices((x_val, y_val))
 
@@ -48,7 +42,7 @@ def prepare_data():
     
     return train_ds, val_ds
 
-# --- 2. C++ DÖNÜŞTÜRME FONKSİYONU ---
+# --- 2. C++ DOSYA OLUŞTURUCU ---
 def convert_tflite_to_cc(tflite_path, cc_path, model_name):
     with open(tflite_path, 'rb') as f:
         data = f.read()
@@ -57,7 +51,7 @@ def convert_tflite_to_cc(tflite_path, cc_path, model_name):
     
     with open(cc_path, 'w') as f:
         f.write(f'#include <cstdint>\n\n')
-        f.write(f'// Model boyutu: {len(data)} bytes\n')
+        f.write(f'// Model Size: {len(data)} bytes\n')
         f.write(f'const unsigned int {var_name}_len = {len(data)};\n')
         f.write(f'alignas(16) const unsigned char {var_name}[] = {{\n')
         
@@ -67,34 +61,42 @@ def convert_tflite_to_cc(tflite_path, cc_path, model_name):
                 f.write('\n')
         
         f.write('\n};\n')
-    print(f"C++ dosyası oluşturuldu: {cc_path}")
+    print(f"C++ Array oluşturuldu: {cc_path} (Boyut: {len(data)} bytes)")
 
-# --- 3. MODEL EĞİTİM VE DÖNÜŞTÜRME DÖNGÜSÜ ---
-def train_and_convert_all():
+# --- 3. ANA İŞLEM DÖNGÜSÜ ---
+def train_and_shrink_all():
     train_ds, val_ds = prepare_data()
     input_shape = (IMG_SIZE, IMG_SIZE, 3)
 
-    # --- QUANTIZATION İÇİN DATA JENERATÖRÜ ---
-    # Modelin değer aralıklarını öğrenmesi için eğitim setinden örnekler alıyoruz
+    # Quantization için örnek veri üreteci (Representative Dataset)
     def representative_data_gen():
-        for input_value, _ in train_ds.take(100): # 100 batch örnekle
-            # Model giriş olarak float32 bekler
+        for input_value, _ in train_ds.take(100):
             yield [input_value]
 
-    models_to_train = {
-        "ResNet50": ResNet50,
-        "EfficientNetB0": EfficientNetB0,
-        "MobileNetV2": MobileNetV2 
-    }
+    # Modelleri Tanımla
+    # EfficientNet ve ResNet mimari gereği çok küçülemez (parametreleri sabittir).
+    # Ancak MobileNetV2 'alpha' parametresi ile "Mini" versiyona dönüşebilir.
+    models_config = [
+        {"name": "MobileNetV2_0.35", "class": MobileNetV2, "alpha": 0.35}, # EN ÖNEMLİSİ BU
+        {"name": "EfficientNetB0",   "class": EfficientNetB0, "alpha": 1.0},
+        {"name": "ResNet50",         "class": ResNet50,       "alpha": 1.0}
+    ]
 
     results = {}
 
-    for name, model_func in models_to_train.items():
-        print(f"\n--- {name} Modeli Başlatılıyor ---")
+    for config in models_config:
+        name = config["name"]
+        print(f"\n================ {name} İŞLENİYOR ================")
         
-        base_model = model_func(weights='imagenet', include_top=False, input_shape=input_shape)
+        # 1. Modeli Kur (Alpha parametresine dikkat)
+        kwargs = {'weights': 'imagenet', 'include_top': False, 'input_shape': input_shape}
+        if name.startswith("MobileNet"):
+            kwargs['alpha'] = config["alpha"] # Model küçültme burada yapılıyor
+            
+        base_model = config["class"](**kwargs)
         base_model.trainable = False 
 
+        # En basit kafa yapısı (Header) - Parametre tasarrufu için
         model = models.Sequential([
             base_model,
             layers.GlobalAveragePooling2D(),
@@ -102,46 +104,47 @@ def train_and_convert_all():
             layers.Dense(NUM_CLASSES, activation='softmax')
         ])
 
-        model.compile(optimizer='adam',
-                      loss='categorical_crossentropy',
-                      metrics=['accuracy'])
-
+        # 2. Modeli Eğit
+        model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
         print(f"{name} eğitiliyor...")
         history = model.fit(train_ds, validation_data=val_ds, epochs=EPOCHS, verbose=1)
         results[name] = history.history['val_accuracy'][-1]
 
-        # 1. Keras Modelini Kaydet
-        h5_path = os.path.join(OUTPUT_DIR, f"{name}_mnist.h5")
-        model.save(h5_path)
-        print(f"{name} H5 kaydedildi.")
+        # 3. Keras Olarak Kaydet (Yedek)
+        model.save(os.path.join(OUTPUT_DIR, f"{name}.h5"))
 
-        # 2. TFLite Dönüşümü (QUANTIZATION EKLENDİ)
-        print(f"{name} Quantization ile dönüştürülüyor...")
+        # 4. TFLite Dönüştürme ve Sıkıştırma (Quantization)
+        print(f"{name} sıkıştırılıyor (Quantization)...")
         converter = tf.lite.TFLiteConverter.from_keras_model(model)
         
-        # --- KRİTİK DEĞİŞİKLİK BURADA ---
+        # En iyi sıkıştırma ayarları
         converter.optimizations = [tf.lite.Optimize.DEFAULT]
         converter.representative_dataset = representative_data_gen
-        # Opsiyonel: Tam sayı zorlaması (gerekirse açılabilir ama bazen hata verir)
+        
+        # İsteğe bağlı: Sadece tamsayı işlemciler için (Hata verirse bu satırı kapat)
         # converter.target_spec.supported_ops = [tf.lite.OpsSet.TFLITE_BUILTINS_INT8]
+        # converter.inference_input_type = tf.int8
+        # converter.inference_output_type = tf.int8
         
         tflite_model = converter.convert()
 
-        tflite_path = os.path.join(OUTPUT_DIR, f"{name}_mnist_quantized.tflite")
+        # Kaydet
+        tflite_filename = f"{name}_quantized.tflite"
+        tflite_path = os.path.join(OUTPUT_DIR, tflite_filename)
         with open(tflite_path, "wb") as f:
             f.write(tflite_model)
-        print(f"{name} TFLite (Quantized) oluşturuldu. Boyut: {len(tflite_model) / 1024:.2f} KB")
+        
+        size_mb = len(tflite_model) / (1024 * 1024)
+        print(f"--> {tflite_filename} boyutu: {size_mb:.2f} MB")
 
-        # 3. C++ Header Dönüşümü
-        cc_path = os.path.join(OUTPUT_DIR, f"{name}_model_data.cc")
-        convert_tflite_to_cc(tflite_path, cc_path, name.lower())
+        # 5. C++ Header Oluştur
+        cc_filename = f"{name}_data.cc"
+        convert_tflite_to_cc(tflite_path, os.path.join(OUTPUT_DIR, cc_filename), name.lower().replace(".", "_"))
 
-    print("\n--- TÜM İŞLEMLER TAMAMLANDI ---")
-    print("Sonuçlar (Validation Accuracy):")
+    print("\n--- SONUÇLAR VE BOYUTLAR ---")
     for name, acc in results.items():
-        print(f"{name}: {acc:.4f}")
-    print(f"\nTüm dosyalar '{OUTPUT_DIR}' klasöründe hazır.")
+        print(f"{name} Accuracy: {acc:.4f}")
+    print(f"Dosyalar '{OUTPUT_DIR}' klasöründe.")
 
-# --- ÇALIŞTIR ---
 if __name__ == "__main__":
-    train_and_convert_all()
+    train_and_shrink_all()
