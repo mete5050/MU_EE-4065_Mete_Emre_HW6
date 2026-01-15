@@ -9,8 +9,8 @@ This repository contains the implementation of **Handwritten Digit Recognition**
 This project implements the application described in **Section 13.7** of the course textbook, with significant optimizations to fit Deep Learning models into limited Flash memory.
 
 ## 👥 Team Members
-* **Name Surname:** [Mehmet Mete EKER] - [150722013]
-* **Name Surname:** [Muhammet Emre MEMİLİ] - [150721033]
+ [Mehmet Mete EKER] - [150722013]
+[Muhammet Emre MEMİLİ] - [150721033]
 
 ## 🎯 Project Objective
 The goal is to deploy a CNN model to recognize handwritten digits (MNIST) on an embedded system. We compared three different architectures mentioned in the course:
