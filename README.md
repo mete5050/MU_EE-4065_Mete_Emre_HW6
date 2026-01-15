@@ -1,10 +1,10 @@
-# EE 4065 - Homework 6: Handwritten Digit Recognition on STM32H7
+# EE 4065 - Homework 6: Handwritten Digit Recognition on STM32
 
 ![STM32](https://img.shields.io/badge/Hardware-STM32H743ZI-blue)
 ![TensorFlow](https://img.shields.io/badge/Framework-TensorFlow%20Lite-orange)
 ![Status](https://img.shields.io/badge/Status-Completed-success)
 
-This repository contains the implementation of **Handwritten Digit Recognition** using Convolutional Neural Networks (CNN) on an **STM32H743ZIT6** microcontroller.
+This repository contains the implementation of **Handwritten Digit Recognition** using Convolutional Neural Networks (CNN) on an **STM32** microcontroller.
 
 This project implements the application described in **Section 13.7** of the course textbook, with significant optimizations to fit Deep Learning models into limited Flash memory.
 
